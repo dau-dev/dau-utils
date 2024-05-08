@@ -1,0 +1,6 @@
+examples/* linguist-documentation
+
+*.md text=auto eol=lf
+*.py text=auto eol=lf
+
+
