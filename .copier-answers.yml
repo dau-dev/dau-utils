@@ -1,0 +1,10 @@
+# Changes here will be overwritten by Copier
+_commit: 573d8d6
+_src_path: git@github.com:python-project-templates/base.git
+add_extension: python
+email: dev@dau.dev
+github: dau-dev
+project_description: Utilities for dau
+project_name: dau utils
+python_version_primary: '3.11'
+team: the dau authors
