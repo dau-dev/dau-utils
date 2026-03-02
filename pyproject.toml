@@ -76,6 +76,7 @@ branch = true
 omit = [
     "dau_utils/tests/integration/",
 ]
+
 [tool.coverage.report]
 exclude_also = [
     "raise NotImplementedError",
