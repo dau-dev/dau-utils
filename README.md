@@ -9,5 +9,18 @@ Utilities for dau
 
 ## Overview
 
+A collection of miscellaneous utilities for dau development.
+
+### Runtime PM Helper
+
+`dau-utils-pci-runtime-pm` holds or releases Linux PCI runtime PM for devices matched from `lspci -Dnn`. It is intentionally package-neutral: callers such as `dau-build` decide which device patterns matter, while this utility owns the sysfs writes.
+
+```bash
+dau-utils-pci-runtime-pm hold --pattern Thunderbolt --pattern JHL --pattern 10ee:7011 --pattern Xilinx
+dau-utils-pci-runtime-pm release --pattern Thunderbolt --pattern JHL --pattern 10ee:7011 --pattern Xilinx
+```
+
+Use `--dry-run` to print planned writes without touching sysfs.
+
 > [!NOTE]
 > This library was generated using [copier](https://copier.readthedocs.io/en/stable/) from the [Base Python Project Template repository](https://github.com/python-project-templates/base).
