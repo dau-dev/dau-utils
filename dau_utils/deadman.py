@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 
@@ -28,6 +29,14 @@ DEFAULT_TIMEOUT_S = 180
 # filesystem lands its journal; if the box is too wedged to sync, the reboot
 # still proceeds.
 RESET_SCRIPT = "echo s > /proc/sysrq-trigger; echo b > /proc/sysrq-trigger"
+
+# systemctl reports these when a unit is not running; anything else (notably
+# "active"/"activating") means the pending reset is still live.
+_INACTIVE_STATES = frozenset({"inactive", "failed", "unknown", "dead"})
+
+
+class DeadmanError(RuntimeError):
+    """A deadman operation could not be confirmed -- treat the host as unsafe."""
 
 
 def arm_command(timeout_s: int = DEFAULT_TIMEOUT_S, *, unit: str = DEFAULT_UNIT) -> tuple[str, ...]:
@@ -60,17 +69,37 @@ def status_command(*, unit: str = DEFAULT_UNIT) -> tuple[str, ...]:
     return ("systemctl", "list-timers", "--all", f"{unit}.timer")
 
 
+def _is_active(name: str) -> bool:
+    """True only if systemctl positively reports ``name`` running. A failed
+    query (D-Bus down, sudo denied) is treated as active -- we cannot claim a
+    unit is stopped unless systemctl confirms it."""
+    result = subprocess.run(("systemctl", "is-active", name), check=False, capture_output=True, text=True)
+    return result.stdout.strip() not in _INACTIVE_STATES
+
+
+def is_armed(*, unit: str = DEFAULT_UNIT) -> bool:
+    """True if a deadman timer or its service is still live for ``unit``."""
+    return _is_active(f"{unit}.timer") or _is_active(f"{unit}.service")
+
+
 def arm(timeout_s: int = DEFAULT_TIMEOUT_S, *, unit: str = DEFAULT_UNIT) -> None:
-    """Clear any stale unit, then schedule the forced reset."""
-    for command in disarm_commands(unit=unit):
-        subprocess.run(command, check=False, capture_output=True)
+    """Schedule the forced reset. Refuses to stomp an already-armed timer so
+    concurrent callers cannot silently cancel each other's protection; clears
+    only inactive stale state before scheduling."""
+    if is_armed(unit=unit):
+        raise DeadmanError(f"{unit} is already armed; disarm it before arming again")
+    subprocess.run(("sudo", "systemctl", "reset-failed", f"{unit}.timer", f"{unit}.service"), check=False, capture_output=True)
     subprocess.run(arm_command(timeout_s, unit=unit), check=True)
 
 
 def disarm(*, unit: str = DEFAULT_UNIT) -> None:
-    """Cancel the pending reset. Safe to call when nothing is armed."""
-    for command in disarm_commands(unit=unit):
-        subprocess.run(command, check=False, capture_output=True)
+    """Cancel the pending reset and confirm it is gone. Raises ``DeadmanError``
+    if the timer cannot be verified inactive -- the caller must not treat the
+    host as safe until this returns cleanly."""
+    subprocess.run(("sudo", "systemctl", "stop", f"{unit}.timer", f"{unit}.service"), check=False, capture_output=True)
+    if is_armed(unit=unit):
+        raise DeadmanError(f"{unit} still armed after stop; reset may still fire -- intervene before trusting the host")
+    subprocess.run(("sudo", "systemctl", "reset-failed", f"{unit}.timer", f"{unit}.service"), check=False, capture_output=True)
 
 
 @contextmanager
@@ -95,7 +124,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.dry_run:
             print(" ".join(arm_command(args.timeout, unit=args.unit)))
             return 0
-        arm(args.timeout, unit=args.unit)
+        try:
+            arm(args.timeout, unit=args.unit)
+        except DeadmanError as error:
+            print(f"deadman NOT armed: {error}", file=sys.stderr)
+            return 1
         print(f"deadman armed: reset in {args.timeout}s (unit {args.unit}); disarm before then")
         return 0
 
@@ -104,7 +137,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             for command in disarm_commands(unit=args.unit):
                 print(" ".join(command))
             return 0
-        disarm(unit=args.unit)
+        try:
+            disarm(unit=args.unit)
+        except DeadmanError as error:
+            print(f"deadman DISARM FAILED: {error}", file=sys.stderr)
+            return 1
         print(f"deadman disarmed (unit {args.unit})")
         return 0
 
