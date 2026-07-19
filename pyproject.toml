@@ -50,6 +50,7 @@ develop = [
 
 [project.scripts]
 dau-utils-pci-runtime-pm = "dau_utils.pci_runtime_pm:main"
+dau-utils-deadman = "dau_utils.deadman:main"
 
 [project.urls]
 Repository = "https://github.com/dau-dev/dau-utils"
