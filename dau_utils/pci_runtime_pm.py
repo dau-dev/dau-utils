@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_DEVICE_PATTERNS = ("Thunderbolt", "JHL", "10ee:7011", "Xilinx")
 DEFAULT_SYSFS_ROOT = Path("/sys/bus/pci/devices")
 
 
@@ -16,7 +16,7 @@ class RuntimePmWrite:
     value: str
 
 
-def discover_pci_devices(lspci_output: str, *, patterns: Sequence[str] = DEFAULT_DEVICE_PATTERNS) -> tuple[str, ...]:
+def discover_pci_devices(lspci_output: str, *, patterns: Sequence[str] = ()) -> tuple[str, ...]:
     matches: list[str] = []
     for line in lspci_output.splitlines():
         if any(pattern in line for pattern in patterns):
@@ -43,7 +43,7 @@ def plan_runtime_pm_writes(mode: str, devices: Sequence[str], *, sysfs_root: Pat
 def apply_runtime_pm_writes(writes: Sequence[RuntimePmWrite]) -> tuple[RuntimePmWrite, ...]:
     applied: list[RuntimePmWrite] = []
     for write in writes:
-        if write.path.exists() and write.path.parent.exists():
+        if write.path.exists():
             write.path.write_text(f"{write.value}\n")
             applied.append(write)
     return tuple(applied)
@@ -59,8 +59,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print writes without applying them")
     args = parser.parse_args(argv)
 
-    patterns = tuple(args.pattern) if args.pattern else DEFAULT_DEVICE_PATTERNS
-    devices = tuple(args.device) or discover_pci_devices(args.lspci_output if args.lspci_output is not None else _lspci_output(), patterns=patterns)
+    patterns = tuple(args.pattern)
+    if args.device:
+        devices: tuple[str, ...] = tuple(args.device)
+    elif patterns:
+        lspci_output = args.lspci_output if args.lspci_output is not None else _lspci_output()
+        devices = discover_pci_devices(lspci_output, patterns=patterns)
+    else:
+        devices = ()
     writes = plan_runtime_pm_writes(args.mode, devices, sysfs_root=args.sysfs_root)
 
     if args.dry_run:
@@ -68,8 +74,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"write {write.path} {write.value}")
         return 0
 
-    for write in apply_runtime_pm_writes(writes):
+    applied = apply_runtime_pm_writes(writes)
+    for write in applied:
         print(f"wrote {write.path} {write.value}")
+    skipped = tuple(write for write in writes if write not in applied)
+    for write in skipped:
+        print(f"skipped {write.path} (missing)", file=sys.stderr)
+    if skipped:
+        print(f"applied {len(applied)} of {len(writes)} runtime PM writes", file=sys.stderr)
+        return 1
     return 0
 
 
