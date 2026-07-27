@@ -1,4 +1,4 @@
-from dau_utils import *  # noqa
+from dau_utils import *
 
 
 def test_all():
