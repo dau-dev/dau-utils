@@ -87,7 +87,7 @@ class _FakeSystemctl:
         self.active_states = active_states
         self.calls: list[tuple[str, ...]] = []
 
-    def __call__(self, command, check=False, capture_output=False, text=False):  # noqa: ANN001
+    def __call__(self, command, check=False, capture_output=False, text=False):
         command = tuple(command)
         self.calls.append(command)
         if command[:2] == ("systemctl", "is-active"):
