@@ -11,6 +11,7 @@ attribute leaves nothing half applied.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import subprocess
@@ -51,7 +52,16 @@ class RuntimePmWrite:
             raise RuntimePmError(f"runtime PM write value must be one of {sorted(_VALUES)}, got {self.value!r}")
 
 
+def check_pattern(pattern: str) -> str:
+    """A discovery pattern must select something; an empty one matches every line."""
+    if not pattern.strip():
+        raise RuntimePmError("a discovery pattern must not be empty")
+    return pattern
+
+
 def discover_pci_devices(lspci_output: str, *, patterns: Sequence[str] = ()) -> tuple[str, ...]:
+    for pattern in patterns:
+        check_pattern(pattern)
     matches: list[str] = []
     for line in lspci_output.splitlines():
         if any(pattern in line for pattern in patterns):
@@ -80,14 +90,42 @@ def missing_targets(writes: Sequence[RuntimePmWrite]) -> tuple[RuntimePmWrite, .
     return tuple(write for write in writes if not write.path.exists())
 
 
+def _write_attribute(path: Path, value: str) -> None:
+    """Write one sysfs attribute without following a symlink at the attribute
+    itself. The device entry under the sysfs root is a symlink by design, but
+    the attribute files are regular; one that is a link points somewhere this
+    tool must not write."""
+    if path.parent.name == "power" and path.parent.is_symlink():
+        raise RuntimePmError(f"{path.parent} is a symlink; refusing to write through it")
+    fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_TRUNC)
+    try:
+        os.write(fd, f"{value}\n".encode())
+    finally:
+        os.close(fd)
+
+
 def apply_runtime_pm_writes(writes: Sequence[RuntimePmWrite]) -> tuple[RuntimePmWrite, ...]:
-    """Apply every write, or none: a missing attribute refuses the whole plan
-    so a device is never left half held or half released."""
+    """Apply every write, or none. A missing attribute refuses the plan before
+    anything is written; a write that fails part-way restores the attributes
+    already changed, so a device is never left half held or half released."""
     missing = missing_targets(writes)
     if missing:
         raise RuntimePmError("missing sysfs attributes: " + ", ".join(str(write.path) for write in missing))
-    for write in writes:
-        write.path.write_text(f"{write.value}\n")
+    previous: list[tuple[RuntimePmWrite, str]] = []
+    try:
+        for write in writes:
+            before = write.path.read_text()
+            _write_attribute(write.path, write.value)
+            previous.append((write, before))
+    except OSError as error:
+        restored = []
+        for done, before in reversed(previous):
+            try:
+                _write_attribute(done.path, before.strip())
+                restored.append(str(done.path))
+            except OSError:
+                pass
+        raise RuntimePmError(f"writing {write.path} failed ({error}); restored {len(restored)} of {len(previous)} earlier writes") from error
     return tuple(writes)
 
 
@@ -108,6 +146,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.lspci_output is not None and not args.pattern:
         parser.error("--lspci-output only makes sense with --pattern")
+    if any(not pattern.strip() for pattern in args.pattern):
+        parser.error("--pattern must not be empty; an empty pattern matches every device")
 
     try:
         if args.device:
@@ -135,7 +175,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"missing {write.path}", file=sys.stderr)
         print(f"applied 0 of {len(writes)} runtime PM writes: the plan is refused whole", file=sys.stderr)
         return 1
-    for write in apply_runtime_pm_writes(writes):
+    try:
+        applied = apply_runtime_pm_writes(writes)
+    except RuntimePmError as error:
+        print(f"runtime PM: {error}", file=sys.stderr)
+        return 1
+    for write in applied:
         print(f"wrote {write.path} {write.value}")
     return 0
 
