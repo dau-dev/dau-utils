@@ -52,7 +52,7 @@ check-dist:  ## check python sdist and wheel with check-dist
 check-types:  ## check python types with ty
 	ty check --python $$(which python)
 
-checks: check-dist
+checks: check-dist check-types
 
 # Alias
 check: checks
@@ -101,7 +101,7 @@ dist-check:  ## run python dist checker with twine
 
 dist: clean dist-build dist-check  ## build all dists
 
-publish: dist  ## publish python assets
+publish: dist  ## build the distributions a release would publish (publishing is a separate step)
 
 #########
 # CLEAN #
