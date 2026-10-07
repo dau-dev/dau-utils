@@ -191,3 +191,46 @@ def test_module_entrypoint_runs_cli_for_uninstalled_checkout(capsys, monkeypatch
         "write /sys/bus/pci/devices/0000:04:00.0/power/control on",
         "write /sys/bus/pci/devices/0000:04:00.0/d3cold_allowed 0",
     ]
+
+
+def test_an_empty_pattern_is_refused() -> None:
+    """An empty shell variable would otherwise match every enumerated device."""
+    with pytest.raises(SystemExit):
+        main(["hold", "--pattern", "", "--lspci-output", LSPCI_OUTPUT, "--dry-run"])
+    with pytest.raises(RuntimePmError, match="must not be empty"):
+        discover_pci_devices(LSPCI_OUTPUT, patterns=(" ",))
+
+
+def test_an_attribute_that_is_a_symlink_is_not_written_through(tmp_path, capsys) -> None:
+    device_root = tmp_path / "0000:04:00.0"
+    (device_root / "power").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text("keep\n")
+    (device_root / "power" / "control").symlink_to(elsewhere)
+    (device_root / "d3cold_allowed").write_text("1\n")
+
+    assert main(["hold", "--device", "0000:04:00.0", "--sysfs-root", str(tmp_path)]) == 1
+    assert elsewhere.read_text() == "keep\n"
+    assert (device_root / "d3cold_allowed").read_text() == "1\n"  # nothing half applied
+    assert "runtime PM:" in capsys.readouterr().err
+
+
+def test_a_failed_write_restores_the_attributes_already_changed(tmp_path, monkeypatch, capsys) -> None:
+    device_root = tmp_path / "0000:04:00.0"
+    (device_root / "power").mkdir(parents=True)
+    control = device_root / "power" / "control"
+    d3cold = device_root / "d3cold_allowed"
+    control.write_text("auto\n")
+    d3cold.write_text("1\n")
+    real_write = pci_runtime_pm._write_attribute
+
+    def failing(path, value):
+        if path.name == "d3cold_allowed" and value == "0":
+            raise OSError("device went away")
+        real_write(path, value)
+
+    monkeypatch.setattr(pci_runtime_pm, "_write_attribute", failing)
+    assert main(["hold", "--device", "0000:04:00.0", "--sysfs-root", str(tmp_path)]) == 1
+    assert control.read_text() == "auto\n"  # the first write was rolled back
+    assert d3cold.read_text() == "1\n"
+    assert "restored 1 of 1" in capsys.readouterr().err

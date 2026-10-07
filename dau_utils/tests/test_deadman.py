@@ -226,3 +226,22 @@ def test_module_entrypoint_runs_cli_for_uninstalled_checkout(capsys, monkeypatch
         assert exc.code == 0
 
     assert "--on-active=42" in capsys.readouterr().out
+
+
+def test_arm_does_not_report_protection_it_could_not_confirm(monkeypatch) -> None:
+    """A query that fails AFTER systemd-run is not 'probably armed': the host
+    may or may not reboot, and arm must say it could not tell."""
+    calls: list[tuple[str, ...]] = []
+
+    def run(command, **kwargs):
+        command = tuple(command)
+        calls.append(command)
+        if command[:2] == ("systemctl", "is-active"):
+            if any(c[:3] == ("sudo", "-n", "systemd-run") for c in calls):
+                raise subprocess.TimeoutExpired(command, 15.0)  # systemd stopped answering after the run
+            return subprocess.CompletedProcess(command, 0, stdout="inactive\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deadman.subprocess, "run", run)
+    with pytest.raises(DeadmanError, match="could not be confirmed"):
+        arm(120)

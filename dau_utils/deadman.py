@@ -111,15 +111,20 @@ def _run(command: Sequence[str], *, check: bool) -> subprocess.CompletedProcess:
         raise DeadmanError(f"{shlex.join(command)} could not run: {error}") from error
 
 
+def _queried_active(name: str) -> bool:
+    """What systemctl says about ``name``; raises DeadmanError when it cannot say."""
+    result = _run(("systemctl", "is-active", name), check=False)
+    return result.stdout.strip() not in _INACTIVE_STATES
+
+
 def _is_active(name: str) -> bool:
-    """True only if systemctl positively reports ``name`` not running. A failed
+    """True unless systemctl positively reports ``name`` not running. A failed
     query (D-Bus down, sudo denied, a hang) is treated as active -- we cannot
     claim a unit is stopped unless systemctl confirms it."""
     try:
-        result = _run(("systemctl", "is-active", name), check=False)
+        return _queried_active(name)
     except DeadmanError:
         return True
-    return result.stdout.strip() not in _INACTIVE_STATES
 
 
 def is_armed(*, unit: str = DEFAULT_UNIT) -> bool:
@@ -138,7 +143,13 @@ def arm(timeout_s: int = DEFAULT_TIMEOUT_S, *, unit: str = DEFAULT_UNIT) -> None
         raise DeadmanError(f"{unit} is already armed; disarm it before arming again")
     _run(disarm_commands(unit=unit)[1], check=False)
     _run(command, check=True)
-    if not is_armed(unit=unit):
+    # the confirmation must be a positive answer: a query that fails here is
+    # not "probably armed", it is a host whose protection cannot be shown
+    try:
+        confirmed = _queried_active(f"{unit}.timer") or _queried_active(f"{unit}.service")
+    except DeadmanError as error:
+        raise DeadmanError(f"systemd-run returned but the timer could not be confirmed ({error}); the host is NOT protected") from error
+    if not confirmed:
         raise DeadmanError(f"systemd-run returned but {unit}.timer is not active; the host is NOT protected")
 
 
