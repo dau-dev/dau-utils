@@ -101,7 +101,7 @@ dist-check:  ## run python dist checker with twine
 
 dist: clean dist-build dist-check  ## build all dists
 
-publish: dist  ## build the distributions a release would publish (publishing is a separate step)
+publish: dist  ## publish python assets
 
 #########
 # CLEAN #
